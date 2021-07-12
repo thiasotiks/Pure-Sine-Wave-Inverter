@@ -9,6 +9,10 @@
   Fuse Blown signal added at D8 [Not implemented so far. Kept for future upgradability]
   Sayantan Sinha: 06/06/2021
   sPWM on the atMega328P for the arduino NANO. H-bridge output with deadtime.
+ *
+ * Copyright (c) 2021 Sayantan Sinha
+ *
+ * MIT License
 */
 #define FB 0                                    // Fuse Blown                            (D8  i.e. bit-0 in PORTB) (LOW: OK, HIGH: iether DC fuse is blown or any-or-both of the low-side MOSFETs are not working) 
 #define HS1 1                                   // High side drive pin of Half Bridge #1 (D9  i.e. bit-1 in PORTB)
