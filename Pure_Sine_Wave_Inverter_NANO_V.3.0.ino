@@ -1,30 +1,32 @@
 /*
  * ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~350 W Pure Sine Wave Inverter with CC CV Charging, Automatic Changeover [Rev. 2]~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-****[The author will NOT take any liability if you receive any kind of damage using this code. Use at your own risk!]****
-  Pure_Sine_Wave_Inverter_V.3.0 [NOT compatible with version 1.x or 2.x boards]
-  Change log:
-  pin# changed: HS2 "D11 --> D10", LS1 "D10 --> D11"
-  MOSFET driver shutdown (SD) pin disconnected and grounded (i.e. drivers are now always ON)
-  UPS_ON/OFF switch added at D13
-  Fuse Blown signal added at D8 [Not implemented so far. Kept for future upgradability]
-  Sayantan Sinha: 06/06/2021
-  sPWM on the atMega328P for the arduino NANO. H-bridge output with deadtime.
- *
+ * CHG_RLY_NC and CHG_RLY_NO is commented in the program. You can uncomment them in order to enable the feature of autometically disconnecting the transformer from the mains voltage when the mains voltage
+ * is too high. But, in that case you will have to connect the transformer to the terminal labeled as "140V" in the PCB instead of "230V".
+ * 
+ * Warning: Playing with voltage higher than 30 V ac or 60 V dc might be lethal.
+ * **** The author will NOT take any liability if you receive any kind of damage or injury using this code. Use at your own risk! ****
+ * 
+ * This code is under MIT License
  * Copyright (c) 2021 Sayantan Sinha
- *
- * MIT License
 */
+
 #define FB 0                                    // Fuse Blown                            (D8  i.e. bit-0 in PORTB) (LOW: OK, HIGH: iether DC fuse is blown or any-or-both of the low-side MOSFETs are not working) 
 #define HS1 1                                   // High side drive pin of Half Bridge #1 (D9  i.e. bit-1 in PORTB)
 #define HS2 2                                   // Low side drive pin of Half Bridge #1  (D10 i.e. bit-2 in PORTB)
 #define LS1 3                                   // High side drive pin of Half Bridge #2 (D11 i.e. bit-3 in PORTB)
 #define LS2 4                                   // Low side drive pin of Half Bridge #2  (D12 i.e. bit-4 in PORTB)
 #define SW 5                                    // UPS ON/OFF switch                     (D13 i.e. bit-5 in PORTB) (HIGH: UPS OFF, LOW: UPS ON)
-#define PIN_ZC (PIND & (1 << PD3))              // Read pinZc
-#define PIN_MNS (PIND & (1 << PD2))             // Read pinMns
-#define PIN_SW (PINB & (1 << PB5))              // Read pinSw
-#define W_CNG_RLY_HIGH (PORTD |= 0b10000000)    // Make change over relay HIGH
-#define W_CNG_RLY_LOW (PORTD &= 0b01111111)     // Make change over relay LOW
+#define PIN_ZC (PIND & (1 << PD3))
+#define PIN_MNS (PIND & (1 << PD2))             // Read mains on pin
+#define PIN_SW (PINB & (1 << PB5))              // Read switch pin
+#define CNG_RLY_NO (PORTD |= 0b10000000)        // Switch change-over relay to NO
+#define CNG_RLY_NC (PORTD &= 0b01111111)        // Switch change-over relay to NC
+#define CHG_RLY_NO (PORTD |= 0b01000000)        // Switch charging relay to NO
+#define CHG_RLY_NC (PORTD &= 0b10111111)        // Switch charging relay to NC
+#define FAN_ON (PORTD |= 0b00000010)            // Make fan pin high
+#define FAN_OFF (PORTD &= 0b11111101)           // Make fan pin low
+#define BUZ_ON (PORTD |= 0b00010000)            // Make buzzer pin high
+#define BUZ_OFF (PORTD &= 0b11101111)           // Make buzzer pin low
 // A4 & A5 are used in I2C communication
 #define SW_FREQ 16000                           // sPWM switching frequency in Hz
 #define MAX_COUNT 1000                          // (16 MHz / SW_FREQ) / 2
@@ -37,35 +39,42 @@
 #define MOD_INDX_MIN 40                         // Min modulation index of sPWM
 #define VO_LO 537                               // ADC reading equivalent for the lower threshold output voltage  = ((vtx / c) / ADC res); e.g. vtx = 10.95 V, voltage devider fact. c = 2.660, ADC res = 4.887 mV
 #define VO_HI 562                               // ADC reading equivalent for the upper threshold output voltage  = ((vtx / c) / ADC res); e.g. vtx = 12.40 V, voltage devider fact. c = 2.660, ADC res = 4.887 mV
+//#define VO_CUT 250                              // Cut-off voltage, below which the inverter will be turned on (~100 V mns)
+#define VO_HI_CUT 750                           // High cut-off voltage, above which the charging will be off and the mains voltage will be disconnected from the transformer
 #define VB_MAX 950                              // ADC reading equivalent for the max bat voltage during cc-cv charge = ((vb / k) / ADC res); e.g. vb = 14.20 V, voltage devider fact. k = 3.122, ADC res = 4.887 mV
 #define VB_TOP 920                              // ADC reading equivalent for the max bat voltage during topping charge = ((vb / k) / ADC res); e.g. vb = 13.80 V, voltage devider fact. k = 3.122, ADC res = 4.887 mV
-#define VC_MAX 85                               // ADC reading equivalent for the max chg current during cc-cv charge = ((ic * a) / ADC res); e.g. ic = 6.0 A, voltage amplification fact. a = 0.07, ADC res = 4.887 mV
+#define VC_MAX 85                               // ADC reading equivalent for the max chg current during cc-cv charge = ((ic * a) / ADC res); e.g. ic = 2.0 A, voltage amplification fact. a = 0.22, ADC res = 4.887 mV [Actual = 5 A]
 #define VC_TOP 25                               // ADC reading equivalent for the max chg current during topping charge = ((ic * a) / ADC res); e.g. ic = 0.5 A, voltage amplification fact. a = 0.22, ADC res = 4.887 mV
-#define VB_LOW 750                              // ADC reading equivalent for the low bat voltage during running the inverter = ((vb / k) / ADC res); e.g. vb = 11.50 V, voltage devider fact. k = 3.122, ADC res = 4.887 mV
+#define VB_LO 750                               // ADC reading equivalent for the low bat voltage during running the inverter = ((vb / k) / ADC res); e.g. vb = 11.50 V, voltage devider fact. k = 3.122, ADC res = 4.887 mV
 #define VB_CRIT 690                             // ADC reading equivalent for the critical bat voltage during running the inverter = ((vb / k) / ADC res); e.g. vb = 10.50 V, voltage devider fact. k = 3.122, ADC res = 4.887 mV
+#define VB_STRT 800                             // Minimum required battery voltage to start inverter (vb = 12.2 V)
 #define VL_MAX 560                              // ADC reading equivalent for the max load current during inverter running = ((il * b) / ADC res); e.g. il = 50 A, voltage amplification fact. b = 0.0545, ADC res = 4.887 mV
+#define TEM_HI 86                               // Above this temperature reading fan will be on (℃ = TEM_HI * 0.4888)
+#define TEM_LO 72                               // Below this temperature reading fan will be off (℃ = TEM_LO * 0.4888)
+#define TEM_MX 122                              // Critical temperature, over which the inverter will be shut down (℃ = TEM_MX * 0.4888)
 #define MNS_WAIT_TIME 3000                      // Wait time (ms) from detecting mains voltage to setting the mnsOn flag
 #define CNG_OVER_DLY 8                          // Delay time (ms) after zero-crossing to start the change over procedure
 
 #define CNG_OVER true
 
-#define TWBR_320 17                             // TWBR value for SCL frequency = 320 kHz
-#define SLA_W (0x3f << 1)                       // Slave (I2C Module) address + write bit
+#define TWBR_320 17                                          // TWBR value for SCL frequency = 320 kHz
+#define SLA_W (0x27 << 1)                                    // Slave address + write bit
 
-#define MNS_ON 0b10000000                       // Mask to read MNS_ON bit from the LED Status Reg
-#define INV_ON 0b01000000
-#define CHG_ON 0b00100000
-#define BAT_LO 0b00010000
-#define OVR_LD 0b00001000
+#define INV_ON 0b10000000
+#define CHG_ON 0b01000000
+#define BAT_LO 0b00100000
+#define OVR_LD 0b00010000
+#define MNS_ON 0b00001000
 #define FUS_BL 0b00000100
 
-const int pinVo = A0, pinVt = A1, pinVb = A2, pinMd = A3, pinVl = A6, pinVc = A7;                                              // Analog pin declearations
-const int pinFan = 1, pinMns = 2, pinZc = 3, pinBuz = 4, pinChRng = 5, pinChRly = 6, pinCngRly = 7, pinFb = 8, pinSw = 13;     // Digital pin declerations
+const int pinVo = 0, pinVt = 1, pinVb = 2, pinMd = 3, pinVl = 6, pinVc = 7;                                                    // Analog pin declearations (0 indicates A0, 1 for A1 and so on)
+const int pinFan = 1, pinMns = 2, pinZc = 3, pinBuz = 4, pinChRng = 5, pinChRly = 6, pinCngRly = 7, pinFb = 8, pinSw = 13;     // Digital pin declerations (1 indicates D1, 2 for D2 and so on)
 
 byte ledsr = 0;                                 // LED Status Register [MNS_ON  INV_ON  CHG_ON  BAT_LO  OVR_LD  FUS_BL  0  0]
 byte erCode = 0;                                // Error code for inverter shutdown
 volatile byte i = 0;                            // The counter for the lookUp array
 volatile bool pcyl = false;                     // Flag for positive half cycle
+volatile unsigned long int tick1ms = 0;         // Millis counter
 
 bool invOn = false;                             // Inverter on flag
 bool mnsOn = false;                             // Mains on flag
@@ -73,15 +82,19 @@ bool chgOn = false;                             // Charging on flag
 bool cngOverRequest = false;                    // Change over to mains request flag
 bool zcPrev = true;                             // Stores the status of pinZc
 bool topChg = false;
+bool beepOn = false;
 byte dispStatus = 0;                            // LCD display status register [MNS_ON  INV_ON  CHG_ON  BAT_LO  OVR_LD  FUS_BL  0  0]
 unsigned int modIndx = 50;                      // Start the inverter with this modulation index
 unsigned int vo;                                // Stores output voltage feedback
 unsigned int vb;                                // Stores bat voltage
 unsigned int vl;                                // Stores load current
 unsigned int vc;                                // Stores charging current
+unsigned int vt;                                // Stores temperature
 unsigned long timePrev = 0;                     // General purpose time recorder
 unsigned long timeInvOff = 0;                   // Inverter off time recorder
 unsigned long timeMnsOn = 0;                    // Mains on time recorder
+unsigned long timeTem = 0;                      // Temperature sensor reading time recorder
+unsigned long timeChgOff = 0;                   // Charging off time recorder
 unsigned long zcTime = 0;                       // Records zero crossing time of mains voltage
 unsigned long mnsTime = 0;                      // Records the mains voltage detection time
 //Look up tables with 160 entries each, normalised to have max value of 500 which is the period of the PWM loaded into register ICR1.(D:\Project Files\MATLAB\SPWM_PhaseFreqCorrect_LookUp_Table_Gen_for_V_3_0.m)
@@ -94,7 +107,10 @@ void shutdownInv(bool coEnable = false);
 void startChg(void);
 void stopChg(void);
 void glowLED(const byte oneByte);
+unsigned int adcRead(byte ch);
+void beep(int n = 1, int beepLength = 100, int beepInterval = 500);
 void beepErr(void);
+void wait_ms(unsigned int ms);
 
 void setup()
 {
@@ -109,12 +125,18 @@ void setup()
   pinMode(SCL, INPUT_PULLUP);
   pinMode(SDA, INPUT_PULLUP);
   TWBR = TWBR_320;                                         // SCL Frequency = CPU Clock Frequency / (16 + (2 * TWBR * Prescaler)) [ATMega328P Datasheet p. 267, 292]
+  TCCR0A = 0b00000010;                                     // Timer 0: Mode 2, CTC
+  TCCR0B = 0b00000011;                                     // Prescaler = 64
+  TIMSK0 = 0b00000010;                                     // Output compare match A INTERRUPT enable
+  OCR0A = 249;                                             // For interrupt in every 1 ms interval
+  ADMUX = 0b01000000;                                      // Select A_ref = +5 V
+  ADCSRA = 0b10010111;                                     // ADC enable, prescaler = f_CPU / 128 [Ref: Atmega328P datasheet, pp. 317-320]
   changeDuty();
   glowLED(MNS_ON | INV_ON | CHG_ON | BAT_LO | OVR_LD | FUS_BL);  // Glow all LEDs
-  digitalWrite(pinBuz, HIGH);                              // Start up beep!
-  delay(500);
-  digitalWrite(pinBuz, LOW);
+  FAN_ON;
+  beepErr();                                               // Start up beep!
   glowLED(0);                                              // Turn off all LEDs
+  FAN_OFF;
   mnsOn = !PIN_MNS;                                        // Mains On flag will be cleared if pinMns is high
   if (PIN_SW)
     if (!mnsOn)                                            // No mains power detected
@@ -123,14 +145,17 @@ void setup()
 
 void loop()
 {
+  /*#################################################################################################################*/
+  /*                                       ~~~~~~~~INVERTER MODE~~~~~~~~                                             */
+  /*#################################################################################################################*/
   if (invOn) {                                             // Inverter Mode routine
     if (i == 1) {                                          // Zero-crossing of the inverter
       if (cngOverRequest)                                  // If there is a change over to mains request pending
         shutdownInv();                                     // Shutdown inverter but without changing over to the mains
       else {                                               // If there is no shutdown request pending
-        vo = analogRead(pinVo);                            // Read output voltage feedback at (+Ve & -Ve peaks)
-        vb = analogRead(pinVb);                            // Read bat volatage
-        vl = analogRead(pinVl);                            // Read load current
+        vo = adcRead(pinVo);                               // Read output voltage feedback at (+Ve & -Ve peaks)
+        vb = adcRead(pinVb);                               // Read bat volatage
+        vl = adcRead(pinVl);                               // Read load current
         if (vo < VO_LO) {                                  // If output voltage is lower than the VO_LO
           if (modIndx < MOD_INDX_MAX) {
             modIndx++;                                     // Increase modulation index by 1%
@@ -148,18 +173,20 @@ void loop()
           shutdownInv(CNG_OVER);                           // Shut down inverter with change over to mains enable
           beepErr();                                       // Gives error notification by beeping and makes an 1 s delay
         }
+        if (vb < VB_LO && !beepOn)
+          beep(1, 100, 10000);                             // If battery voltage is low beep every 10 s
         if (!PIN_SW)                                       // If inverter on/off switch is turned off
           shutdownInv(CNG_OVER);                           // Shut down inverter with change over to mains enable
       }
     }
     if (mnsOn) {                                           // If mains voltage is on but inverter is still running
       if (cngOverRequest) {                                // If there is a change over to mains request pending
-        if (millis() - zcTime > CNG_OVER_DLY)              // The change over to mains process starts after CNG_OVER_DLY
+        if (tick1ms - zcTime > CNG_OVER_DLY)               // The change over to mains process starts after CNG_OVER_DLY
           shutdownInv(CNG_OVER);                           // Shut down inverter with change over to mains enable
       }
       else if (PIN_ZC && !zcPrev) {                        // When the mains voltage is going from -Ve half to +Ve half. (pinZc = HIGH: Mains voltage is at +Ve hallf cycle)
         cngOverRequest = pcyl;                             // A change over request to mains voltage is issued if inverter and mains both are at +Ve half
-        zcTime = millis();                                 // Record the time of zero crossing
+        zcTime = tick1ms;                                  // Record the time of zero crossing
       }
       zcPrev = PIN_ZC;                                     // Save the state of zero-crossing pin
       mnsOn = !PIN_MNS;                                    // Mains On flag will be cleared if pinMns goes high
@@ -167,8 +194,8 @@ void loop()
     else {
       if (!PIN_MNS) {                                      // Mains voltage detected
         if (!mnsTime)
-          mnsTime = millis();                              // Record the time when the mains voltage is detected
-        else if (millis() - mnsTime > MNS_WAIT_TIME) {
+          mnsTime = tick1ms;                               // Record the time when the mains voltage is detected
+        else if (tick1ms - mnsTime > MNS_WAIT_TIME) {
           mnsOn = !PIN_MNS;                                // Mains On flag will be set if pinMns is still low after MNS_WAIT_TIME is elapsed
           mnsTime = 0;                                     // Clear the mnsTime
           zcPrev = true;
@@ -179,17 +206,20 @@ void loop()
         mnsTime = 0;                                       // Clear the mnsTime
     }
   }
+  /*#################################################################################################################*/
+  /*                                       ~~~~~~~~MAINS MODE~~~~~~~~                                                */
+  /*#################################################################################################################*/
   else {                                                   // Mains Mode routine (will be executed even if mains is off, if the inverter on/off switch is at "off" position)
     if (mnsOn) {                                           // If mains voltage is on
       if (!chgOn) {
-        if (millis() - timeMnsOn > 2500)                   // If 2.5 s has been elapsed after mains voltage on
+        if (tick1ms - timeMnsOn > 2500)                    // If 2.5 s has been elapsed after mains voltage on
           startChg();                                      // Start charging
       }
       else {                                               // Charging is on
-        if (millis() - timePrev > 9) {                     // Actuate charging current in every 10 ms interval
+        if (tick1ms - timePrev > 9) {                      // Actuate charging current in every 10 ms interval
           unsigned int vbatMax = topChg ? VB_TOP : VB_MAX; // If topping charge is on max charging voltage is VB_TOP equiv. else VB_MAX equiv.
-          vb = analogRead(pinVb);
-          vc = analogRead(pinVc);
+          vb = adcRead(pinVb);
+          vc = adcRead(pinVc);
           if (vc < VC_MAX && vb < vbatMax) {
             if (OCR1B < MAX_COUNT_CHG)                     // Maximum duty cycle = (MAX_COUNT_CHG / MAX_COUNT) * 100 %;
               OCR1B = OCR1B + 1;                           // Increase duty-cycle slowly
@@ -198,31 +228,46 @@ void loop()
             if (OCR1B > 0)                                 // Minimum possible duty cycle 0%
               OCR1B = OCR1B - 1;                           // Decrease duty-cycle slowly
           }
-          topChg = topChg ? vc < VC_TOP : (vb >= VB_MAX && vc < VC_TOP); // If battery voltage reaches VB_MAX equiv. and charging current drops below VC_TOP equiv. then topping charge is started. If topping chg is already set then it will be reset if chg current goes above VC_TOP equiv.
+          topChg = topChg ? vc < (VC_TOP + 5) : (vb >= VB_MAX && vc < VC_TOP); // If battery voltage reaches VB_MAX equiv. and charging current drops below VC_TOP equiv. then topping charge is started. If topping chg is already set then it will be reset if chg current goes above (VC_TOP + 5) equiv.
           if ((ledsr & CHG_ON) && topChg)                  // If cc-cv charging ended and topping charge has been started but charge on led is still on
             glowLED(ledsr & ~CHG_ON);                      // Turn off charging LED
           else if (!(ledsr & CHG_ON) && !topChg)           // If cc-cv charging is on but, chg on LED is off
             glowLED(CHG_ON);                               // Turn on charging LED
-          timePrev = millis();                             // Record the charging current actuation time
+          timePrev = tick1ms;                              // Record the charging current actuation time
         }
       }
       if (!(ledsr & MNS_ON))                               // If mains is on but, mains on LED is off
         glowLED(MNS_ON);
       pcyl = !PIN_ZC;                                      // If mains voltage is at +Ve half, the inverter will start at -Ve half in case of mains failure
+      if (adcRead(pinVo) > VO_HI_CUT)
+        stopChg();                                         // If mains voltage is too high (~ >280 V) stop charging and disconnect mains from transformer
     }
     else {                                                 // If mains voltage fails
       if (PIN_SW) {                                        // Check if inverter on/off switch is at "on" position
         fireInv();                                         // Start inverter and switch to inverter mode
       }
       if (!invOn) {                                        // If last fireInv call did not turn on the inverter
-        timeMnsOn = millis();                              // Mains on timing is reset to present time
+        timeMnsOn = tick1ms;                               // Mains on timing is reset to present time
         if (chgOn)                                         // Mains off, Inverter off but charging is still on
           stopChg();                                       // Stop chargig
         if (ledsr & MNS_ON)                                // If mains failed but mains on LED is still on
           glowLED(ledsr & ~MNS_ON);                        // Turn off mains on LED
       }
     }
-    mnsOn = !PIN_MNS;                                      // Mains On flag will be cleared if pinMns goes high
+    mnsOn = !PIN_MNS;                                    // Mains on flag will be cleared if pinMns goes high and vice versa
+  }
+  /*#################################################################################################################*/
+  /*                                        ~~~~~~~~   END   ~~~~~~~~                                                */
+  /*#################################################################################################################*/
+  if (beepOn)
+    beep();                                                // If beep on flag is set call the beep function
+  if ((tick1ms - timeTem) > 1000) {                        // Check the temperature in every 1 s interval
+    timeTem = tick1ms;
+    vt = adcRead(pinVt);
+    if (vt > TEM_HI)
+      FAN_ON;
+    else if (vt < TEM_LO)
+      FAN_OFF;
   }
 }
 
@@ -270,6 +315,11 @@ ISR(TIMER1_COMPB_vect)
     PORTB &= 0b11100111;  // Turn off LS1 & LS2 in charging mode
 }
 
+ISR(TIMER0_COMPA_vect)
+{
+  tick1ms++;
+}
+
 void changeDuty(void)
 {
   modIndx = modIndx > MOD_INDX_MAX ? MOD_INDX_MAX : modIndx < MOD_INDX_MIN ? MOD_INDX_MIN : modIndx;           // Above 92% the minimum count will be below dead-time (DT)
@@ -288,10 +338,11 @@ void fireInv(void)
 {
   TIMSK1 = 0;                                    // Disable Timer1 interrupts
   PORTB &= 0b11100001;                           // Pull down LS2, LS1, HS2, & HS1.
-  vb = analogRead(pinVb);
-  if ( vb > VB_LOW) {
-    W_CNG_RLY_HIGH;                              // Engage change over relay
-    delay(3);
+  vb = adcRead(pinVb);
+  if ( vb > VB_STRT) {
+    CNG_RLY_NO;                                  // Engage change over relay
+    // CHG_RLY_NC;                                  // Switch charging relay to NC (connect transformer to mains)
+    beep(3);                                     // Start 3 beep sounds
     glowLED(INV_ON);                             // Glow the inverter on LED
     TCCR1A = pcyl ? 0b11000010 : 0b00110010;     // To start with: +Ve half cycle-> OC1A (pin D9) = Set on Compare Match; OC1B (pin D10) = Disconnect; -Ve half cycle-> Opposite
     TCCR1B = 0b00011001;                         // Fast PWM (Mode 14); Clock Select = System clock (No Prescaling) [Ref. Data Sheet, p. 132]
@@ -317,11 +368,9 @@ void fireInv(void)
   else {
     if (!(ledsr & BAT_LO)) {                     // If battery low indicator is not glowing
       glowLED(BAT_LO);                           // Indicate battery low
-      digitalWrite(pinBuz, HIGH);                // Put a long beep
+      beepErr();                                 // Put a long beep
     }
-    delay(800);
-    digitalWrite(pinBuz, LOW);
-    delay(200);
+    wait_ms(1000);
   }
 }
 
@@ -330,14 +379,14 @@ void shutdownInv(bool coEnable = false)        // If coEnable is true, change ov
   TIMSK1 = 0;                                  // No more interrupt!
   TCCR1A = 0b00000010;                         // OC1A (D9) & OC1B (D10) = Disconnect;
   PORTB &= 0b11100001;                         // Pull down LS2, LS1, HS2, & HS1.
-  timeInvOff = millis();                       // Record the time when the inverter is turned off
+  timeInvOff = tick1ms;                        // Record the time when the inverter is turned off
   if (coEnable) {                              // If change over is enabled
-    delay(1);
-    W_CNG_RLY_LOW;                             // Disengage change over relay to switch to the mains power
+    wait_ms(1);
+    CNG_RLY_NC;                                // Disengage change over relay to switch to the mains power
     invOn = false;                             // Clear inverter on flag only after a successfull changeover to mains
     glowLED(!erCode ? MNS_ON : erCode);        // Indicate mains on if error code is zero else indicate the specific error
     mnsOn = !PIN_MNS;                          // Mains On flag will be cleared if pinMns goes high
-    timeMnsOn = millis();                      // Cng over to mains time is recorded
+    timeMnsOn = tick1ms;                       // Cng over to mains time is recorded
     cngOverRequest = false;                    // Clear change over request pending status flag
     modIndx = 70;
     changeDuty();
@@ -347,58 +396,149 @@ void shutdownInv(bool coEnable = false)        // If coEnable is true, change ov
 
 void startChg(void)
 {
-  glowLED(ledsr | CHG_ON);                     // Set the charging on indicator
-  TCCR1A = 0b00000010;                         // OC1A (pin D9) & OC1B (pin D10) = Disconnect
-  TCCR1B = 0b00011001;                         // Fast PWM (Mode 14); Clock Select = System clock (No Prescaling) [Ref. Data Sheet, p. 132]
-  ICR1 = MAX_COUNT;                            // Switching frequency = 16 kHz (1 / (TIMER1_TOP * 62.5e-9))
-  OCR1A = 0;                                   // Turn on LS1 & LS2 @ count 0 of timer1
-  OCR1B = 0;                                   // This dictates the duty cycle. 0 = 0%, MAX_COUNT = 100%
-  PORTB &= 0b11100001;                         // Pull down LS2, LS1, HS2, & HS1.
-  TIFR1 |= 0b00000111;                         // Clears the Output compare match A&B flags. Clear timer1 overflow flag [Ref. Datasheet pp. 136-137]
-  TIMSK1 = 0b00000110;                         // INT on output comp match A & B
-  chgOn = true;                                // Inverter on flag set
-  topChg = false;                              // Clear topping charge flag
+  if ((adcRead(pinVo) < (VO_HI_CUT - 50)) && ((tick1ms - timeChgOff) > 30000)) {
+    // CHG_RLY_NC;                                  // Disengage charging relay (connect transformer to mains)
+    glowLED(MNS_ON | CHG_ON);                    // Set the charging on indicator
+    TCCR1A = 0b00000010;                         // OC1A (pin D9) & OC1B (pin D10) = Disconnect
+    TCCR1B = 0b00011001;                         // Fast PWM (Mode 14); Clock Select = System clock (No Prescaling) [Ref. Data Sheet, p. 132]
+    ICR1 = MAX_COUNT;                            // Switching frequency = 16 kHz (1 / (TIMER1_TOP * 62.5e-9))
+    OCR1A = 0;                                   // Turn on LS1 & LS2 @ count 0 of timer1
+    OCR1B = 0;                                   // This dictates the duty cycle. 0 = 0%, MAX_COUNT = 100%
+    PORTB &= 0b11100001;                         // Pull down LS2, LS1, HS2, & HS1.
+    TIFR1 |= 0b00000111;                         // Clears the Output compare match A&B flags. Clear timer1 overflow flag [Ref. Datasheet pp. 136-137]
+    TIMSK1 = 0b00000110;                         // INT on output comp match A & B
+    chgOn = true;                                // Inverter on flag set
+    topChg = false;                              // Clear topping charge flag
+  }
+  else {
+    // CHG_RLY_NO;                                  // Switch charging relay to NO (disconnect transformer from mains)
+    glowLED(MNS_ON | INV_ON);                    // Set the inverter on indicator (mns on + inv on = mains voltage too high)
+  }
 }
 
 void stopChg(void)
 {
+  // CHG_RLY_NO;                                  // Switch charging relay to NO (disconnect transformer from mains)
   OCR1A = 0;                                   // Turn on LS1 & LS2 @ count 0 of timer1
   OCR1B = 0;                                   // This dictates the duty cycle. 0 = 0%, MAX_COUNT = 100%
   TIMSK1 = 0b00000000;                         // Disable INT on output comp match A & B
   PORTB &= 0b11100001;                         // Pull down LS2, LS1, HS2, & HS1.
   chgOn = false;                               // Clear the charge on status flag
   glowLED(ledsr & ~CHG_ON);                    // Turn off the charging on indicator
+  timeChgOff = tick1ms;                        // Record the charging off time
 }
 
 void glowLED(const byte oneByte)
 {
-  unsigned long ts = micros();
-  const unsigned long timeOut = 100;                         // Timeout in us during I2C communication
+  unsigned long ts = tick1ms;
+  const unsigned long timeOut = 1;                           // Timeout in ms during I2C communication
   ledsr = oneByte;                                           // update LED status register
   TWCR = (1 << TWINT) | (1 << TWSTA) | (1 << TWEN);          // Send START condition
   while (!(TWCR & (1 << TWINT))) {                           // Wait for TWINT Flag set. This indicates that the START condition has been transmitted.
-    if (micros() - ts > timeOut)
+    if (tick1ms - ts > timeOut)
       break;
   }
   TWDR = SLA_W;                                              // Load SLA_W into TWDR Register
   TWCR = (1 << TWINT) | (1 << TWEN);                         // Clear TWINT bit in TWCR to start transmission of address
   while (!(TWCR & (1 << TWINT))) {                           // Wait for TWINT Flag set. This indicates that the SLA+W has been transmitted, and ACK/NACK has been received
-    if (micros() - ts > timeOut)
+    if (tick1ms - ts > timeOut)
       break;
   }
   TWDR = oneByte;                                            // Load DATA into TWDR Register
   TWCR = (1 << TWINT) | (1 << TWEN);                         // ClearTWINT bit in TWCR to start transmission of data
   while (!(TWCR & (1 << TWINT))) {                           // Wait for TWINT Flag set. This indicates that the DATA has been transmitted, and ACK/NACK has been received
-    if (micros() - ts > timeOut)
+    if (tick1ms - ts > timeOut)
       break;
   }
   TWCR = (1 << TWINT) | (1 << TWEN) | (1 << TWSTO);          // Transmit STOP condition
 }
 
+unsigned int adcRead(byte ch)
+{
+  if (ch > 15)
+    return 0;
+  ADMUX &= 0xF0;
+  ADMUX |= ch;
+  ADCSRA |= 0x40;  // Start conversion
+  while (ADCSRA & 0x40);    // Wait until ADC start conversion bit goes low
+  unsigned int a = ADCL;
+  a |= (ADCH << 8);
+  return (a);
+}
+
+void beep(int n = 1, int beepLength = 100, int beepInterval = 500)
+{
+  static bool buzOn = false;
+  static int __n = 1;
+  static int __len = 100;
+  static int __interval = 500;
+  static unsigned long int tToggle = 0;
+  if (!beepOn) {
+    beepOn = 1;                                     // Set the beep on flag
+    __n = n;                                        // Init beep counter
+    __len = beepLength;                             // Init beep length
+    __interval = beepInterval;                      // Init beep interval
+    if (__n) {
+      tToggle = tick1ms;
+      BUZ_ON;                                       // Write Buzz pin HIGH
+      buzOn = 1;
+    }
+  }
+  else if (__n) {
+    if (buzOn) {
+      if ((tick1ms - tToggle) > __len) {
+        tToggle = tick1ms;
+        BUZ_OFF;                                    // Write Buzz pin LOW
+        buzOn = 0;
+      }
+    }
+    else {
+      if ((tick1ms - tToggle) > __interval) {
+        __n--;                                      // Decreament the beep counter
+        if (__n) {
+          tToggle = tick1ms;
+          BUZ_ON;                                    // Write Buzz pin HIGH
+          buzOn = 1;
+        }
+      }
+    }
+  }
+  else {
+    BUZ_OFF;                                      // Write Buzz pin LOW
+    beepOn = 0;                                   // Reset the beep on flag
+  }
+}
+
 void beepErr(void)
 {
   digitalWrite(pinBuz, HIGH);
-  delay(800);
+  wait_ms(800);
   digitalWrite(pinBuz, LOW);
-  delay(3000);
+  wait_ms(500);
+}
+
+void wait_ms(unsigned int ms)
+{
+  unsigned long int __tbegin = tick1ms;
+  while ((tick1ms - __tbegin) < ms);
+}
+
+void test()
+{
+  byte i = 10;
+  while (i) {
+    glowLED(MNS_ON);
+    wait_ms(3000);
+    glowLED(INV_ON);
+    wait_ms(3000);
+    glowLED(CHG_ON);
+    wait_ms(3000);
+    glowLED(BAT_LO);
+    wait_ms(3000);
+    glowLED(OVR_LD);
+    wait_ms(3000);
+    glowLED(FUS_BL);
+    wait_ms(3000);
+    i--;
+  }
 }
